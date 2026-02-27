@@ -1131,26 +1131,27 @@ app.post('/upload', upload.single('file'), async (req, res) => {
   }
 
   try {
-    // 1. 先處理中文亂碼問題
-    const rawName = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
-    // 2. 清理檔名：移除空格、括號等 Supabase 不喜歡的符號，只保留文字、數字、點和底線
-    const originalName = rawName.replace(/[^a-zA-Z0-9.\u4e00-\u9fa5_-]/g, '_');
-    const fileExt = path.extname(originalName);
-    const timestamp = Date.now();
-    const storagePath = `${timestamp}-${originalName}`;
+    // 1. 取得原始中文檔名
+    const originalName = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
+    
+    // 2. 產生純英文存儲檔名
+    const extension = path.extname(originalName);
+    const storageFileName = `${Date.now()}-${Math.random().toString(36).substring(7)}${extension}`;
 
-    const { error: uploadError } = await supabase.storage
+    // 3. 上傳到 Supabase Storage
+    const { data, error: storageError } = await supabase.storage
       .from('portfolio-files')
-      .upload(storagePath, req.file.buffer, {
+      .upload(storageFileName, req.file.buffer, {
         contentType: req.file.mimetype,
         upsert: false
       });
 
-    if (uploadError) {
-      console.error('Storage upload error:', uploadError);
+    if (storageError) {
+      console.error('Storage upload error:', storageError);
       return res.status(500).json({ error: 'Failed to upload file to storage' });
     }
 
+    // 4. 如果上傳的是履歷，先把資料庫裡舊的「活動中」履歷標記為「已刪除」
     if (type === 'resume') {
       const { error: updateError } = await supabase
         .from('portfolios')
@@ -1159,17 +1160,18 @@ app.post('/upload', upload.single('file'), async (req, res) => {
         .eq('status', 'active');
 
       if (updateError) {
-        console.error('Update error:', updateError);
-        return res.status(500).json({ error: 'Database error' });
+        console.error('Update error (Soft Delete):', updateError);
+        // 注意：這裡不一定要回傳錯誤，因為就算沒舊履歷可刪，我們還是要存新履歷
       }
     }
 
+    // 5. 將新資料存入 Supabase Database (統一在最後這裡存一次就好)
     const { error: insertError } = await supabase
       .from('portfolios')
       .insert([{
-        filename: storagePath,
-        original_name: originalName,
-        type: type,
+        filename: storageFileName,    // 雲端硬碟裡的英文名
+        original_name: originalName,  // 網頁上顯示的中文名
+        type: type,                   // 'resume' 或 'portfolio'
         status: 'active'
       }]);
 
@@ -1178,12 +1180,13 @@ app.post('/upload', upload.single('file'), async (req, res) => {
       return res.status(500).json({ error: 'Failed to save to database' });
     }
 
+    // 6. 成功回傳
     res.json({ message: `${type === 'resume' ? 'Resume' : 'Portfolio'} uploaded successfully` });
+
   } catch (err) {
     console.error('Upload error:', err);
     res.status(500).json({ error: 'Server error during upload' });
   }
-});
 
 app.post('/delete', async (req, res) => {
   const { password, ids } = req.body;
