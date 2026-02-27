@@ -1032,13 +1032,13 @@ app.post('/delete', (req, res) => {
   }
 
   const placeholders = ids.map(() => '?').join(',');
-  const query = \`UPDATE portfolios SET status = 'deleted' WHERE id IN (\${placeholders}) AND type = 'portfolio'\`;
+  const query = `UPDATE portfolios SET status = 'deleted' WHERE id IN (${placeholders}) AND type = 'portfolio'`;
 
   db.run(query, ids, function(err) {
     if (err) {
       return res.status(500).json({ error: 'Database error' });
     }
-    res.json({ message: \`\${this.changes} item(s) deleted successfully\` });
+    res.json({ message: `${this.changes} item(s) deleted successfully` });
   });
 });
 
