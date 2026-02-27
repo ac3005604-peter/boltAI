@@ -1187,6 +1187,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     console.error('Upload error:', err);
     res.status(500).json({ error: 'Server error during upload' });
   }
+}); // <--- 就是這行！你原本漏掉了這行來結束 app.post('/upload', ...)
 
 app.post('/delete', async (req, res) => {
   const { password, ids } = req.body;
