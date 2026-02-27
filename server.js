@@ -811,26 +811,7 @@ app.get('/admin', (req, res) => {
 });
 
 app.get('/technical', (req, res) => {
-  const prompt = \`Build a professional portfolio website using Node.js (Express) and SQLite, optimized for Render.com.
-
-### Core Logic & Pages:
-1. Page 1 (Home/Resume): Welcome message for interviewers. The active resume content must be fetched from the database.
-2. Page 2 (Portfolio): A list to select work samples from the DB. Default to displaying the first item automatically.
-3. Page 3 (Admin/Upload):
-   - **Upload Options**: "New Resume" and "New Portfolio Work".
-   - **Delete Option**: A "Delete" function to select specific portfolio works from the DB and soft delete them.
-   - **Auto-Soft Delete Logic**: When a "New Resume" is uploaded, the system must automatically mark the previous resume as "deleted" (status='deleted') so only the latest remains active.
-   - **Chinese Filename Fix**: Use 'multer' and ensure filenames are encoded in UTF-8 to prevent garbled text on Linux/Render.
-   - **Security (Password)**: Any action involving the Database (Upload or Delete) must require the password "88888888" to proceed.
-4. Page 4 (Technical Info): Display this exact Prompt in a styled <code> block. Mention the tech stack: Node.js, Express, SQLite, and Render.
-
-### Technical Requirements:
-- UI: Implement a "Dual-Page Side-by-Side" view for PDFs/Images with \\\`gap: 0\\\` and \\\`margin: 0\\\` for a seamless look. Responsive for mobile.
-- Backend: Use SQLite for metadata. Include a startup script to initialize the DB table (id, filename, type, status, created_at).
-- Deployment: Must include 'package.json' with 'npm start' and use \\\`process.env.PORT\\\`.
-
-### Deliverables:
-Provide the full integrated code (Server, CSS, HTML) in one go.\`;
+  const prompt = "This website was built using a custom prompt for Node.js, Express, and SQLite, optimized for Render.com. The original prompt included requirements for dual-page portfolio display, automatic resume soft-delete, and Chinese filename support.";
 
   res.send(`
     <!DOCTYPE html>
