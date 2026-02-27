@@ -1,8 +1,9 @@
+require('dotenv').config();
 const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -11,56 +12,38 @@ const ADMIN_PASSWORD = '88888888';
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static('public'));
-app.use('/uploads', express.static('uploads'));
 
-const uploadsDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
+
+if (!supabaseUrl || !supabaseAnonKey) {
+  console.error('Missing Supabase configuration in .env file');
+  process.exit(1);
 }
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, 'uploads/');
-  },
-  filename: (req, file, cb) => {
-    const originalName = Buffer.from(file.originalname, 'latin1').toString('utf8');
-    const timestamp = Date.now();
-    const ext = path.extname(originalName);
-    const nameWithoutExt = path.basename(originalName, ext);
-    const safeFilename = `${timestamp}-${nameWithoutExt}${ext}`;
-    cb(null, safeFilename);
-  }
-});
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
+const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
-const db = new sqlite3.Database('./portfolio.db', (err) => {
-  if (err) {
-    console.error('Error opening database:', err);
-  } else {
-    console.log('Connected to SQLite database');
-    initDatabase();
-  }
-});
+async function initSupabase() {
+  try {
+    const { data, error } = await supabase
+      .from('portfolios')
+      .select('id')
+      .limit(1);
 
-function initDatabase() {
-  db.run(`
-    CREATE TABLE IF NOT EXISTS portfolios (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      filename TEXT NOT NULL,
-      original_name TEXT NOT NULL,
-      type TEXT NOT NULL,
-      status TEXT DEFAULT 'active',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `, (err) => {
-    if (err) {
-      console.error('Error creating table:', err);
+    if (error) {
+      console.error('Error checking portfolios table:', error);
     } else {
-      console.log('Database table initialized');
+      console.log('Connected to Supabase database');
     }
-  });
+  } catch (err) {
+    console.error('Error initializing Supabase:', err);
+  }
 }
+
+initSupabase();
 
 app.get('/', (req, res) => {
   res.send(`
@@ -70,6 +53,7 @@ app.get('/', (req, res) => {
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <title>Professional Portfolio - Home</title>
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
       <style>
         * {
           margin: 0;
@@ -125,13 +109,13 @@ app.get('/', (req, res) => {
           margin-bottom: 2rem;
           border-left: 4px solid #667eea;
         }
-        .resume-viewer {
+        .pdf-viewer {
           margin-top: 2rem;
           border: 1px solid #e2e8f0;
           border-radius: 8px;
           overflow: hidden;
         }
-        .pdf-container {
+        .pdf-pages {
           display: flex;
           gap: 0;
           margin: 0;
@@ -142,28 +126,59 @@ app.get('/', (req, res) => {
         .pdf-page {
           flex: 1;
           min-width: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
         }
-        iframe {
-          width: 100%;
-          height: 800px;
-          border: none;
-          margin: 0;
-          padding: 0;
+        .pdf-page canvas {
+          max-width: 100%;
+          max-height: 800px;
+        }
+        .image-container {
+          text-align: center;
+          padding: 2rem;
+        }
+        .image-container img {
+          max-width: 100%;
+          height: auto;
+          border-radius: 8px;
         }
         .no-resume {
           text-align: center;
           padding: 3rem;
           color: #718096;
         }
+        .controls {
+          padding: 1rem;
+          background: #f7fafc;
+          text-align: center;
+          display: none;
+        }
+        .controls.show {
+          display: block;
+        }
+        button {
+          background: #667eea;
+          color: white;
+          border: none;
+          padding: 0.5rem 1rem;
+          margin: 0 0.25rem;
+          border-radius: 4px;
+          cursor: pointer;
+          transition: background 0.3s;
+        }
+        button:hover {
+          background: #5568d3;
+        }
         @media (max-width: 768px) {
-          .pdf-container {
+          .pdf-pages {
             flex-direction: column;
           }
           .pdf-page {
             min-width: 100%;
           }
-          iframe {
-            height: 500px;
+          .pdf-page canvas {
+            max-height: 500px;
           }
           h1 {
             font-size: 1.8rem;
@@ -184,12 +199,14 @@ app.get('/', (req, res) => {
           <div class="welcome">
             <p>Thank you for visiting my professional portfolio. Below you'll find my current resume. Feel free to explore my work samples in the Portfolio section.</p>
           </div>
-          <div class="resume-viewer" id="resumeViewer">
+          <div class="pdf-viewer" id="resumeViewer">
             <div class="no-resume">Loading resume...</div>
           </div>
         </div>
       </div>
       <script>
+        let resumePdf = null;
+
         async function loadResume() {
           try {
             const response = await fetch('/api/resume');
@@ -197,17 +214,21 @@ app.get('/', (req, res) => {
             const viewer = document.getElementById('resumeViewer');
 
             if (data.resume) {
-              const fileExt = data.resume.filename.toLowerCase().split('.').pop();
+              const fileExt = data.resume.split('.').pop().toLowerCase();
+              const fileUrl = data.resumeUrl;
+
               if (fileExt === 'pdf') {
-                viewer.innerHTML = \`
-                  <div class="pdf-container">
-                    <iframe src="/uploads/\${data.resume.filename}"></iframe>
-                  </div>
-                \`;
+                pdfjsLib.getDocument(fileUrl).promise.then(pdf => {
+                  resumePdf = pdf;
+                  renderPdfPages(1, 2, 'resumeViewer', pdf);
+                }).catch(err => {
+                  viewer.innerHTML = '<div class="no-resume">Error loading PDF</div>';
+                  console.error('PDF loading error:', err);
+                });
               } else {
                 viewer.innerHTML = \`
-                  <div style="text-align: center; padding: 2rem;">
-                    <img src="/uploads/\${data.resume.filename}" style="max-width: 100%; height: auto; border-radius: 8px;" alt="Resume">
+                  <div class="image-container">
+                    <img src="\${fileUrl}" alt="Resume">
                   </div>
                 \`;
               }
@@ -219,6 +240,36 @@ app.get('/', (req, res) => {
             document.getElementById('resumeViewer').innerHTML = '<div class="no-resume">Error loading resume.</div>';
           }
         }
+
+        async function renderPdfPages(startPage, endPage, containerId, pdf) {
+          const container = document.getElementById(containerId);
+          const pagesHtml = [];
+
+          for (let pageNum = startPage; pageNum <= Math.min(endPage, pdf.numPages); pageNum++) {
+            const page = await pdf.getPage(pageNum);
+            const scale = 1.5;
+            const viewport = page.getViewport({ scale });
+
+            const canvasDiv = document.createElement('div');
+            canvasDiv.className = 'pdf-page';
+            const canvas = document.createElement('canvas');
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+
+            const context = canvas.getContext('2d');
+            await page.render({ canvasContext: context, viewport }).promise;
+
+            canvasDiv.appendChild(canvas);
+            pagesHtml.push(canvasDiv);
+          }
+
+          container.innerHTML = '';
+          const pagesContainer = document.createElement('div');
+          pagesContainer.className = 'pdf-pages';
+          pagesHtml.forEach(page => pagesContainer.appendChild(page));
+          container.appendChild(pagesContainer);
+        }
+
         loadResume();
       </script>
     </body>
@@ -234,6 +285,7 @@ app.get('/portfolio', (req, res) => {
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <title>Professional Portfolio - Work Samples</title>
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
       <style>
         * {
           margin: 0;
@@ -327,19 +379,22 @@ app.get('/portfolio', (req, res) => {
           align-items: center;
           justify-content: center;
         }
-        .pdf-container {
+        .pdf-pages {
           width: 100%;
-          height: 100%;
           display: flex;
           gap: 0;
           margin: 0;
         }
-        iframe {
-          width: 100%;
-          height: 100%;
-          border: none;
-          margin: 0;
-          padding: 0;
+        .pdf-page {
+          flex: 1;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 1rem;
+        }
+        .pdf-page canvas {
+          max-width: 100%;
+          max-height: 100%;
         }
         .image-container {
           width: 100%;
@@ -424,7 +479,7 @@ app.get('/portfolio', (req, res) => {
           }
         }
 
-        function viewPortfolio(index) {
+        async function viewPortfolio(index) {
           const items = document.querySelectorAll('.portfolio-item');
           items.forEach((item, i) => {
             item.classList.toggle('active', i === index);
@@ -432,21 +487,52 @@ app.get('/portfolio', (req, res) => {
 
           const portfolio = portfolios[index];
           const viewer = document.getElementById('viewer');
-          const fileExt = portfolio.filename.toLowerCase().split('.').pop();
+          const fileExt = portfolio.filename.split('.').pop().toLowerCase();
+          const fileUrl = portfolio.url;
 
           if (fileExt === 'pdf') {
-            viewer.innerHTML = \`
-              <div class="pdf-container">
-                <iframe src="/uploads/\${portfolio.filename}"></iframe>
-              </div>
-            \`;
+            pdfjsLib.getDocument(fileUrl).promise.then(pdf => {
+              renderPdfPages(1, 2, 'viewer', pdf);
+            }).catch(err => {
+              viewer.innerHTML = '<div class="no-items">Error loading PDF</div>';
+              console.error('PDF loading error:', err);
+            });
           } else {
             viewer.innerHTML = \`
               <div class="image-container">
-                <img src="/uploads/\${portfolio.filename}" alt="\${portfolio.original_name}">
+                <img src="\${fileUrl}" alt="\${portfolio.original_name}">
               </div>
             \`;
           }
+        }
+
+        async function renderPdfPages(startPage, endPage, containerId, pdf) {
+          const container = document.getElementById(containerId);
+          const pagesHtml = [];
+
+          for (let pageNum = startPage; pageNum <= Math.min(endPage, pdf.numPages); pageNum++) {
+            const page = await pdf.getPage(pageNum);
+            const scale = 1.5;
+            const viewport = page.getViewport({ scale });
+
+            const pageDiv = document.createElement('div');
+            pageDiv.className = 'pdf-page';
+            const canvas = document.createElement('canvas');
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+
+            const context = canvas.getContext('2d');
+            await page.render({ canvasContext: context, viewport }).promise;
+
+            pageDiv.appendChild(canvas);
+            pagesHtml.push(pageDiv);
+          }
+
+          container.innerHTML = '';
+          const pagesContainer = document.createElement('div');
+          pagesContainer.className = 'pdf-pages';
+          pagesHtml.forEach(page => pagesContainer.appendChild(page));
+          container.appendChild(pagesContainer);
         }
 
         loadPortfolios();
@@ -754,7 +840,9 @@ app.get('/admin', (req, res) => {
               return;
             }
 
-            deleteList.innerHTML = data.portfolios.map(item => \`
+            deleteList.innerHTML = data.portfolios
+              .filter(item => item.type === 'portfolio')
+              .map(item => \`
               <div class="delete-item">
                 <input type="checkbox" value="\${item.id}" id="delete-\${item.id}">
                 <label for="delete-\${item.id}" style="margin: 0; cursor: pointer;">
@@ -811,7 +899,31 @@ app.get('/admin', (req, res) => {
 });
 
 app.get('/technical', (req, res) => {
-  const prompt = "This website was built using a custom prompt for Node.js, Express, and SQLite, optimized for Render.com. The original prompt included requirements for dual-page portfolio display, automatic resume soft-delete, and Chinese filename support.";
+  const prompt = `Build a professional portfolio website using Node.js (Express) and Supabase (PostgreSQL), optimized for Render.com.
+
+### Supabase Configuration:
+- Project URL: https://zmfluvivuotxdofagfvu.supabase.co
+- Anon Key: sb_publishable_3xWUC61Q0M9n4dQesQpT8w_znaMBROj
+- Table Name: "portfolios" (Columns: id, filename, original_name, type, status, created_at)
+
+### Core Logic & Pages:
+1. **Page 1 (Home/Resume)**: Welcome message. Fetch the latest active resume from Supabase.
+2. **Page 2 (Portfolio)**: List work samples from Supabase. Default to the first item.
+   - **Crucial UI**: Use pdf.js for side-by-side PDF page display with gap: 0 and margin: 0.
+3. **Page 3 (Admin/Upload)**:
+   - Password "88888888" required for all DB actions.
+   - Upload integrated with Supabase Storage (Bucket: "portfolio-files").
+   - Auto-soft delete of previous resumes when new resume uploaded.
+   - Chinese filename support with UTF-8 encoding.
+4. **Page 4 (Technical Info)**: Display this Prompt and tech stack.
+
+### Technical Requirements:
+- Use @supabase/supabase-js for database and storage.
+- Bind to process.env.PORT for Render deployment.
+- Startup script checks if portfolios table exists.
+
+### Tech Stack:
+- Node.js, Express, Supabase (PostgreSQL), pdf.js, Render.com`;
 
   res.send(`
     <!DOCTYPE html>
@@ -921,8 +1033,9 @@ app.get('/technical', (req, res) => {
             <div class="tech-stack">
               <div class="tech-badge">Node.js</div>
               <div class="tech-badge">Express</div>
-              <div class="tech-badge">SQLite</div>
-              <div class="tech-badge">Multer</div>
+              <div class="tech-badge">Supabase</div>
+              <div class="tech-badge">PostgreSQL</div>
+              <div class="tech-badge">pdf.js</div>
               <div class="tech-badge">Render.com</div>
             </div>
           </div>
@@ -938,39 +1051,74 @@ app.get('/technical', (req, res) => {
   `);
 });
 
-app.get('/api/resume', (req, res) => {
-  db.get(
-    'SELECT * FROM portfolios WHERE type = ? AND status = ? ORDER BY created_at DESC LIMIT 1',
-    ['resume', 'active'],
-    (err, row) => {
-      if (err) {
-        return res.status(500).json({ error: 'Database error' });
-      }
-      res.json({ resume: row || null });
+app.get('/api/resume', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('portfolios')
+      .select('*')
+      .eq('type', 'resume')
+      .eq('status', 'active')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      return res.status(500).json({ error: 'Database error' });
     }
-  );
+
+    if (data) {
+      const { data: { publicUrl } } = supabase.storage
+        .from('portfolio-files')
+        .getPublicUrl(data.filename);
+
+      res.json({
+        resume: data.original_name,
+        resumeUrl: publicUrl
+      });
+    } else {
+      res.json({ resume: null, resumeUrl: null });
+    }
+  } catch (err) {
+    console.error('Error fetching resume:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
-app.get('/api/portfolios', (req, res) => {
-  db.all(
-    'SELECT * FROM portfolios WHERE type = ? AND status = ? ORDER BY created_at DESC',
-    ['portfolio', 'active'],
-    (err, rows) => {
-      if (err) {
-        return res.status(500).json({ error: 'Database error' });
-      }
-      res.json({ portfolios: rows || [] });
+app.get('/api/portfolios', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('portfolios')
+      .select('*')
+      .eq('type', 'portfolio')
+      .eq('status', 'active')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      return res.status(500).json({ error: 'Database error' });
     }
-  );
+
+    const portfoliosWithUrls = data.map(item => {
+      const { data: { publicUrl } } = supabase.storage
+        .from('portfolio-files')
+        .getPublicUrl(item.filename);
+
+      return {
+        ...item,
+        url: publicUrl
+      };
+    });
+
+    res.json({ portfolios: portfoliosWithUrls || [] });
+  } catch (err) {
+    console.error('Error fetching portfolios:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
-app.post('/upload', upload.single('file'), (req, res) => {
+app.post('/upload', upload.single('file'), async (req, res) => {
   const { password, type } = req.body;
 
   if (password !== ADMIN_PASSWORD) {
-    if (req.file) {
-      fs.unlinkSync(req.file.path);
-    }
     return res.status(401).json({ error: 'Invalid password' });
   }
 
@@ -979,48 +1127,62 @@ app.post('/upload', upload.single('file'), (req, res) => {
   }
 
   if (type !== 'resume' && type !== 'portfolio') {
-    fs.unlinkSync(req.file.path);
     return res.status(400).json({ error: 'Invalid type' });
   }
 
-  const originalName = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
+  try {
+    const originalName = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
+    const fileExt = path.extname(originalName);
+    const timestamp = Date.now();
+    const storagePath = `${timestamp}-${originalName}`;
 
-  if (type === 'resume') {
-    db.run(
-      'UPDATE portfolios SET status = ? WHERE type = ? AND status = ?',
-      ['deleted', 'resume', 'active'],
-      (err) => {
-        if (err) {
-          return res.status(500).json({ error: 'Database error' });
-        }
+    const { error: uploadError } = await supabase.storage
+      .from('portfolio-files')
+      .upload(storagePath, req.file.buffer, {
+        contentType: req.file.mimetype,
+        upsert: false
+      });
 
-        db.run(
-          'INSERT INTO portfolios (filename, original_name, type, status) VALUES (?, ?, ?, ?)',
-          [req.file.filename, originalName, type, 'active'],
-          (err) => {
-            if (err) {
-              return res.status(500).json({ error: 'Database error' });
-            }
-            res.json({ message: 'Resume uploaded successfully' });
-          }
-        );
+    if (uploadError) {
+      console.error('Storage upload error:', uploadError);
+      return res.status(500).json({ error: 'Failed to upload file to storage' });
+    }
+
+    if (type === 'resume') {
+      const { error: updateError } = await supabase
+        .from('portfolios')
+        .update({ status: 'deleted' })
+        .eq('type', 'resume')
+        .eq('status', 'active');
+
+      if (updateError) {
+        console.error('Update error:', updateError);
+        return res.status(500).json({ error: 'Database error' });
       }
-    );
-  } else {
-    db.run(
-      'INSERT INTO portfolios (filename, original_name, type, status) VALUES (?, ?, ?, ?)',
-      [req.file.filename, originalName, type, 'active'],
-      (err) => {
-        if (err) {
-          return res.status(500).json({ error: 'Database error' });
-        }
-        res.json({ message: 'Portfolio uploaded successfully' });
-      }
-    );
+    }
+
+    const { error: insertError } = await supabase
+      .from('portfolios')
+      .insert([{
+        filename: storagePath,
+        original_name: originalName,
+        type: type,
+        status: 'active'
+      }]);
+
+    if (insertError) {
+      console.error('Insert error:', insertError);
+      return res.status(500).json({ error: 'Failed to save to database' });
+    }
+
+    res.json({ message: `${type === 'resume' ? 'Resume' : 'Portfolio'} uploaded successfully` });
+  } catch (err) {
+    console.error('Upload error:', err);
+    res.status(500).json({ error: 'Server error during upload' });
   }
 });
 
-app.post('/delete', (req, res) => {
+app.post('/delete', async (req, res) => {
   const { password, ids } = req.body;
 
   if (password !== ADMIN_PASSWORD) {
@@ -1031,15 +1193,22 @@ app.post('/delete', (req, res) => {
     return res.status(400).json({ error: 'No items selected' });
   }
 
-  const placeholders = ids.map(() => '?').join(',');
-  const query = `UPDATE portfolios SET status = 'deleted' WHERE id IN (${placeholders}) AND type = 'portfolio'`;
+  try {
+    const { error } = await supabase
+      .from('portfolios')
+      .update({ status: 'deleted' })
+      .in('id', ids)
+      .eq('type', 'portfolio');
 
-  db.run(query, ids, function(err) {
-    if (err) {
+    if (error) {
       return res.status(500).json({ error: 'Database error' });
     }
-    res.json({ message: `${this.changes} item(s) deleted successfully` });
-  });
+
+    res.json({ message: `${ids.length} item(s) deleted successfully` });
+  } catch (err) {
+    console.error('Delete error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 app.listen(PORT, () => {
