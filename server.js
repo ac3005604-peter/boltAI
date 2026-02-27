@@ -1132,9 +1132,9 @@ app.post('/upload', upload.single('file'), async (req, res) => {
 
   try {
     // 1. 先處理中文亂碼問題
-    const originalName = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
+    const rawName = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
     // 2. 清理檔名：移除空格、括號等 Supabase 不喜歡的符號，只保留文字、數字、點和底線
-    const originalName = originalName.replace(/[^a-zA-Z0-9.\u4e00-\u9fa5_-]/g, '_');
+    const originalName = rawName.replace(/[^a-zA-Z0-9.\u4e00-\u9fa5_-]/g, '_');
     const fileExt = path.extname(originalName);
     const timestamp = Date.now();
     const storagePath = `${timestamp}-${originalName}`;
