@@ -902,8 +902,8 @@ app.get('/technical', (req, res) => {
   const prompt = `Build a professional portfolio website using Node.js (Express) and Supabase (PostgreSQL), optimized for Render.com.
 
 ### Supabase Configuration:
-- Project URL: https://zmfluvivuotxdofagfvu.supabase.co
-- Anon Key: sb_publishable_3xWUC61Q0M9n4dQesQpT8w_znaMBROj
+- Project URL: 
+- Anon Key: 
 - Table Name: "portfolios" (Columns: id, filename, original_name, type, status, created_at)
 
 ### Core Logic & Pages:
