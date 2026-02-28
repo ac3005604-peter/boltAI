@@ -46,6 +46,9 @@ async function initSupabase() {
 initSupabase();
 
 app.get('/', (req, res) => {
+  // --- 自動跳轉功能區 ---   // 如果想停用跳轉，只需在下面這行前面加上 // 即可
+  return res.redirect('https://9d649cec-3ea3-48af-9d7a-38decdbe2ed1-00-2utpetzogwoh2.kirk.replit.dev'); 
+  // --------------------    // 以下是原本 Render 的首頁代碼 (被 return 擋住後就不會執行)
   res.send(`
     <!DOCTYPE html>
     <html lang="en">
